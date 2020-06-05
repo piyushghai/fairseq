@@ -20,7 +20,7 @@ from fairseq.file_io import PathManager
 from fairseq.logging import meters, metrics
 from fairseq.nan_detector import NanDetector
 from fairseq.optim import lr_scheduler
-
+import herring.torch as herring
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ class Trainer(object):
         self.tpu = getattr(args, 'tpu', False)
         self.cuda = torch.cuda.is_available() and not args.cpu and not self.tpu
         if self.cuda:
-            self.device = torch.device('cuda')
+            self.device = torch.device(herring.get_local_rank()) # Device should be local rank.
         elif self.tpu:
             self.device = utils.get_tpu_device(args)
         else:
@@ -87,7 +87,7 @@ class Trainer(object):
 
         # TODO(myleott): support tpu
         if self.cuda and self.data_parallel_world_size > 1:
-            self._grad_norm_buf = torch.cuda.DoubleTensor(self.data_parallel_world_size)
+            self._grad_norm_buf = torch.cuda.FloatTensor(self.data_parallel_world_size)
         else:
             self._grad_norm_buf = None
 
@@ -106,7 +106,7 @@ class Trainer(object):
 
     @property
     def data_parallel_world_size(self):
-        return self.args.distributed_world_size
+        return herring.get_world_size()
 
     @property
     def data_parallel_process_group(self):
@@ -117,11 +117,11 @@ class Trainer(object):
 
     @property
     def data_parallel_rank(self):
-        return self.args.distributed_rank
+        return herring.get_rank()
 
     @property
     def is_data_parallel_master(self):
-        return distributed_utils.is_master(self.args)
+        return herring.get_rank() == 0
 
     @property
     def criterion(self):
@@ -758,7 +758,7 @@ class Trainer(object):
         self,
         logging_outputs: List[Dict[str, Any]],
         *extra_stats_to_sum,
-        ignore=False,
+        ignore=True,
     ):
         if self.task.__class__.logging_outputs_can_be_summed(self.get_criterion()):
             return self._fast_stat_sync_sum(
@@ -822,19 +822,19 @@ class Trainer(object):
         else:
             log_keys = None
 
-        data = distributed_utils.all_reduce_dict(
-            data,
-            device=self.device,
-            group=self.data_parallel_process_group
-        )
-
-        extra_stats_to_sum = [
-            data['extra_stats_' + str(i)] for i in range(len(extra_stats_to_sum))
-        ]
-        if log_keys is not None:
-            logging_outputs = [{k: data['logging_outputs_' + k] for k in log_keys}]
-        else:
-            logging_outputs = []
+        # data = distributed_utils.all_reduce_dict(
+        #     data,
+        #     device=self.device,
+        #     group=self.data_parallel_process_group
+        # )
+        #
+        # extra_stats_to_sum = [
+        #     data['extra_stats_' + str(i)] for i in range(len(extra_stats_to_sum))
+        # ]
+        # if log_keys is not None:
+        #     logging_outputs = [{k: data['logging_outputs_' + k] for k in log_keys}]
+        # else:
+        #     logging_outputs = []
         return logging_outputs, extra_stats_to_sum
 
     def _is_grad_norms_consistent(self, grad_norm_buf):
@@ -851,10 +851,7 @@ class Trainer(object):
         if self._grad_norm_buf is not None:
             self._grad_norm_buf.zero_()
             self._grad_norm_buf[self.data_parallel_rank] = grad_norm
-            distributed_utils.all_reduce(
-                self._grad_norm_buf,
-                group=self.data_parallel_process_group
-            )
+            self._grad_norm_buf = herring.all_reduce(self._grad_norm_buf)
 
             if not self._is_grad_norms_consistent(self._grad_norm_buf):
                 pretty_detail = "\n".join(

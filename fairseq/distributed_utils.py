@@ -18,6 +18,7 @@ import torch
 import torch.distributed as dist
 
 from fairseq import utils
+import herring.torch as herring
 
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,12 @@ def is_master(args):
 
 def infer_init_method(args):
     if args.distributed_init_method is not None or getattr(args, 'tpu', False):
+        return
+
+    if args.distributed_backend == 'herring':
+        args.distributed_world_size = herring.get_world_size()
+        args.distributed_rank = herring.get_rank()
+        args.distributed_init_method = 'herring'
         return
 
     # support torch.distributed.launch

@@ -28,6 +28,7 @@ from fairseq.data import iterators
 from fairseq.logging import meters, metrics, progress_bar
 from fairseq.trainer import Trainer
 from fairseq.model_parallel.megatron_trainer import MegatronTrainer
+import herring.torch as herring
 
 
 logging.basicConfig(
@@ -48,13 +49,14 @@ def main(args, init_distributed=False):
 
     # Initialize CUDA and distributed training
     if torch.cuda.is_available() and not args.cpu and not getattr(args, 'tpu', False):
-        torch.cuda.set_device(args.device_id)
+        torch.cuda.set_device(herring.get_local_rank())
     np.random.seed(args.seed)
     utils.set_torch_seed(args.seed)
     if init_distributed:
-        args.distributed_rank = distributed_utils.distributed_init(args)
+        # args.distributed_rank = distributed_utils.distributed_init(args)
+        pass
 
-    if distributed_utils.is_master(args):
+    if herring.get_world_rank() == 0:
         checkpoint_utils.verify_checkpoint_directory(args.save_dir)
 
     # Print args
@@ -70,12 +72,13 @@ def main(args, init_distributed=False):
     # Build model and criterion
     model = task.build_model(args)
     criterion = task.build_criterion(args)
-    logger.info(model)
-    logger.info('model {}, criterion {}'.format(args.arch, criterion.__class__.__name__))
-    logger.info('num. model params: {} (num. trained: {})'.format(
-        sum(p.numel() for p in model.parameters()),
-        sum(p.numel() for p in model.parameters() if p.requires_grad),
-    ))
+    if herring.get_world_rank() == 0:
+        logger.info(model)
+        logger.info('model {}, criterion {}'.format(args.arch, criterion.__class__.__name__))
+        logger.info('num. model params: {} (num. trained: {})'.format(
+            sum(p.numel() for p in model.parameters()),
+            sum(p.numel() for p in model.parameters() if p.requires_grad),
+        ))
 
     # (optionally) Configure quantization
     if args.quantization_config_path is not None:
@@ -342,7 +345,11 @@ def cli_main(modify_parser=None):
 
     if args.distributed_init_method is not None:
         # distributed training
-        if torch.cuda.device_count() > 1 and not args.distributed_no_spawn:
+
+        if args.distributed_init_method == 'herring':
+            main(args, init_distributed=True)
+
+        elif torch.cuda.device_count() > 1 and not args.distributed_no_spawn:
             start_rank = args.distributed_rank
             args.distributed_rank = None  # assign automatically
             torch.multiprocessing.spawn(
